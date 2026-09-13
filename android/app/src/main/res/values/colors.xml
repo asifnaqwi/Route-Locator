@@ -1,0 +1,8 @@
+<!-- android/app/src/main/res/values/colors.xml -->
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#0284C7</color>
+    <color name="primary_dark">#0369A1</color>
+    <color name="accent">#0EA5E9</color>
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>
