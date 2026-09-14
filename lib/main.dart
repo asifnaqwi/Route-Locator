@@ -83,7 +83,7 @@ class PolioLocationTaskHandler extends TaskHandler {
 // -----------------------------------------------------------------------------
 class KalmanLatLong {
   final double qMetresPerSecond;
-  long? _timestampMs;
+  int? _timestampMs;
   double _lat = 0.0;
   double _lng = 0.0;
   double _variance = -1.0; // P error covariance
@@ -115,7 +115,7 @@ class KalmanLatLong {
       _lng = lng;
       _variance = accuracy * accuracy;
     } else {
-      final long timeDelta = timestampMs - (_timestampMs ?? timestampMs);
+      final int timeDelta = timestampMs - (_timestampMs ?? timestampMs);
       if (timeDelta > 0) {
         // State Prediction: estimate variance increases with time delta
         _variance += (timeDelta / 1000.0) * qMetresPerSecond * qMetresPerSecond;
@@ -135,8 +135,6 @@ class KalmanLatLong {
     }
   }
 }
-
-typedef long = int;
 
 // -----------------------------------------------------------------------------
 // 100% Offline SQLite Database Helper
@@ -849,28 +847,4 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     required IconData icon,
     required Color color,
   }) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.black12),
-      ),
-      child: Column(
-        children: [
-          Icon(icon, color: color, size: 24),
-          const SizedBox(height: 6),
-          Text(
-            value,
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: const TextStyle(fontSize: 11, color: Colors.black54),
-          ),
-        ],
-      ),
-    );
-  }
-}
+    *End of code snippet or remainder of file*
