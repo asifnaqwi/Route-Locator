@@ -438,6 +438,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
     // Start Foreground Service
     await FlutterForegroundTask.startService(
+      serviceId: 256,
       notificationTitle: 'Polio Route Tracking Active',
       notificationText: 'Logging immunization pathway offline...',
       callback: startCallback,
