@@ -1,16 +1,15 @@
-<!-- android/app/src/main/res/values/styles.xml -->
+```xml
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 
-      Theme.AppCompat.Light.NoActionBar prevents startup crashes when plugins
-      expect an AppCompat or MaterialComponents theme context.
-    -->
+
     <style name="LaunchTheme" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="android:windowBackground">@drawable/launch_background</item>
-        <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
+        <item name="android:windowNoTitle">true</item>
     </style>
 
     <style name="NormalTheme" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="android:windowBackground">?android:colorBackground</item>
     </style>
+
 </resources>
+```
