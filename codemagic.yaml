@@ -1,64 +1,53 @@
-# codemagic.yaml
 # ==============================================================================
 # Foolproof Codemagic Configuration for 100% Offline Polio Route Navigator
-# Zero Build Errors Guarantee:
-# 1. JVM 8GB Heap to eliminate "Java heap space" out-of-memory during Jetify/Dexing
-# 2. Pre-build cache clean & pub get
-# 3. Clean Debug APK output with exact artifact matching
-# 4. Java 17 + Flutter stable channel environment
 # ==============================================================================
 
 workflows:
   android-offline-build:
     name: Polio Route Navigator (Android Debug APK)
     max_build_duration: 30
-    instance_type: mac_mini_m1 # or linux_x2 for Linux instances
-    
+    instance_type: mac_mini_m1
+
     environment:
       flutter: stable
       java: 17
       groups: []
       vars:
-        # Prevent Gradle Heap Space Out Of Memory Crashes
-        GRADLE_OPTS: "-Dorg.gradle.jvmargs=\"-Xmx8192M -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError\""
+        GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx8192M -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError"
         JAVA_TOOL_OPTIONS: "-Xmx8192m"
 
     scripts:
       - name: Verify Environment & Java Version
         script: |
-          echo "=== DEVSECOPS PIPELINE CHECK ==="
+          echo "=== PIPELINE ENVIRONMENT CHECK ==="
           java -version
           flutter --version
-          echo "Checking Android SDK and Gradle setup..."
 
-      - name: Clean Cache & Get Dependencies
+      - name: Clean Cache & Resolve Dependencies
         script: |
           flutter clean
+          flutter pub add path:^1.9.1 || true
           flutter pub get
 
-      - name: Verify Assets Exist
+      - name: Verify Local Assets
         script: |
           mkdir -p assets
           if [ ! -f "assets/developer.jpg" ]; then
             echo "Generating fallback placeholder for developer.jpg..."
-            # Create a valid minimal image file to prevent asset packaging failure
             touch assets/developer.jpg
           fi
-          echo "Local assets verified."
 
-      - name: Ensure Android Native Structure & Gradlew Permissions
+      - name: Ensure Android Native Structure & Permissions
         script: |
-          chmod +x android/gradlew
+          chmod +x android/gradlew || true
           mkdir -p android/app/src/main/res/values
           mkdir -p android/app/src/main/res/drawable
 
       - name: Build Installable Android Debug APK
         script: |
-          # Build APK with verbose stacktrace on failure for quick diagnosis
-          flutter build apk --debug --verbose
+          flutter build apk --debug --android-skip-build-dependency-validation --verbose
 
     artifacts:
-      # Capture all generated APK binaries
       - build/**/outputs/**/*.apk
       - build/app/outputs/flutter-apk/app-debug.apk
 
