@@ -291,22 +291,15 @@ void _initForegroundTask() {
       channelDescription: 'Maintains background location tracking for health workers.',
       channelImportance: NotificationChannelImportance.HIGH,
       priority: NotificationPriority.HIGH,
-      iconData: const NotificationIconData(
-        resType: ResourceType.mipmap,
-        resPrefix: ResourcePrefix.ic,
-        name: 'launcher',
-      ),
     ),
     iosNotificationOptions: const IOSNotificationOptions(
       showNotification: false,
       playSound: false,
     ),
-    foregroundTaskOptions: const ForegroundTaskOptions(
-      interval: 3000,
-      isOnceEvent: false,
+    foregroundTaskOptions: ForegroundTaskOptions(
+      eventAction: ForegroundTaskEventAction.repeat(3000),
       autoRunOnBoot: false,
       allowWakeLock: true,
-      allowWifiLock: false,
     ),
   );
 }
@@ -402,7 +395,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Future<void> _checkPermissions() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      // In offline mode, remind the user to enable device GPS hardware
       return;
     }
 
@@ -638,7 +630,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Team Lead / Worker Info Card with Local Asset Image
               Card(
                 elevation: 1,
                 color: Colors.white,
@@ -655,7 +646,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           height: 60,
                           fit: BoxFit.cover,
                           errorBuilder: (context, error, stackTrace) {
-                            // Offline fallback icon if asset not copied yet
                             return Container(
                               width: 60,
                               height: 60,
@@ -689,10 +679,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   ),
                 ),
               ),
-
               const SizedBox(height: 16),
-
-              // KPI Stats Grid
               Row(
                 children: [
                   Expanded(
@@ -723,10 +710,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   ),
                 ],
               ),
-
               const SizedBox(height: 16),
-
-              // Live Kalman Filter Telemetry Box
               Card(
                 elevation: 1,
                 color: const Color(0xFFF1F5F9),
@@ -779,10 +763,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   ),
                 ),
               ),
-
               const SizedBox(height: 20),
-
-              // Tracking Controls
               ElevatedButton.icon(
                 onPressed: _toggleTracking,
                 style: ElevatedButton.styleFrom(
@@ -797,9 +778,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
               ),
-
               const SizedBox(height: 12),
-
               OutlinedButton.icon(
                 onPressed: _showAddCheckpointDialog,
                 style: OutlinedButton.styleFrom(
@@ -809,16 +788,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 icon: const Icon(Icons.add_location_alt),
                 label: const Text('MARK HOUSE CHECKPOINT'),
               ),
-
               const SizedBox(height: 24),
-
-              // Recent Checkpoints List
               const Text(
                 'Recent Checkpoints (Local SQLite)',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
-
               if (_checkpoints.isEmpty)
                 Container(
                   padding: const EdgeInsets.all(24),
