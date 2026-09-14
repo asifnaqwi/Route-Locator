@@ -37,7 +37,7 @@ workflows:
 
       - name: Build Installable Android Debug APK
         script: |
-          flutter build apk --debug --verbose
+          flutter build apk --debug --verbose --android-skip-build-dependency-validation
 
     artifacts:
       - build/**/outputs/**/*.apk
