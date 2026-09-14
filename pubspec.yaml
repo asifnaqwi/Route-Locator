@@ -41,3 +41,5 @@ flutter:
   # Declare local asset images - NO network URLs are used
   assets:
     - assets/
+    - assets/developer.jpg
+    - assets/developer.png
