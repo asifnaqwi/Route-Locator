@@ -1,6 +1,5 @@
 <!-- android/app/src/main/AndroidManifest.xml -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
     package="com.polionavigator.polio_route_navigator">
 
     <!-- 100% Offline GPS & Foreground Service Permissions -->
@@ -8,12 +7,11 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
-    <!-- Android 14 (API 34) Foreground service requirement -->
+    <!-- Android 14 (API 34) Foreground service requirement for Background Tracking -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
-    <!-- Wakelock permission to keep device active during immunization rounds -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Required for background foreground task notifications -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
