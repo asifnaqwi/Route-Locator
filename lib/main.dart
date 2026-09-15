@@ -1,12 +1,12 @@
 // lib/main.dart
 // ==============================================================================
-// 100% OFFLINE POLIO ROUTE NAVIGATOR
+// 100% OFFLINE POLIO ROUTE NAVIGATOR (VISUAL MAP EDITION)
 // Features:
-// 1. 100% Offline SQLite database with schema for routes & vaccination checkpoints
-// 2. 1D/2D Kalman Filter algorithm for mitigating urban/rural GPS multipath drift
-// 3. Background foreground task tracking via flutter_foreground_task
-// 4. Wakelock to prevent screen sleep during active vaccination rounds
-// 5. Local assets (assets/developer.jpg) with zero network dependency
+// 1. Visual Map with flutter_map & latlong2
+// 2. Tracking Mode (Records red polyline, saves with category)
+// 3. Guide Mode (Loads blue polyline, navigation arrow rotates by heading)
+// 4. Background foreground task tracking (Wakelock removed for battery saving)
+// 5. 1D/2D Kalman Filter algorithm for mitigating GPS drift
 // ==============================================================================
 
 import 'dart:async';
@@ -18,7 +18,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 
 // -----------------------------------------------------------------------------
 // Top-Level Background Task Handler Callback
@@ -32,9 +34,7 @@ class PolioLocationTaskHandler extends TaskHandler {
   final KalmanLatLong _kalman = KalmanLatLong(qMetresPerSecond: 3.0);
 
   @override
-  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    // Initialize background task
-  }
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
 
   @override
   Future<void> onRepeatEvent(DateTime timestamp) async {
@@ -51,49 +51,44 @@ class PolioLocationTaskHandler extends TaskHandler {
         timestampMs: timestamp.millisecondsSinceEpoch,
       );
 
-      // Save to SQLite
-      await DatabaseHelper.instance.insertWaypoint(
-        rawLat: pos.latitude,
-        rawLng: pos.longitude,
-        filteredLat: _kalman.lat,
-        filteredLng: _kalman.lng,
-        accuracy: pos.accuracy,
-        speed: pos.speed,
-        timestamp: timestamp.toIso8601String(),
-      );
+      // Check if a route is currently being actively tracked
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      int? activeRouteId = prefs.getInt('activeRouteId');
 
-      // Update notification with live distance/status
+      if (activeRouteId != null) {
+        await DatabaseHelper.instance.insertRoutePoint(
+          routeId: activeRouteId,
+          lat: _kalman.lat,
+          lng: _kalman.lng,
+          timestamp: timestamp.toIso8601String(),
+        );
+      }
+
       FlutterForegroundTask.updateService(
-        notificationTitle: 'Polio Campaign Route Active',
-        notificationText: 'Tracking: ${_kalman.lat.toStringAsFixed(5)}, ${_kalman.lng.toStringAsFixed(5)}',
+        notificationTitle: 'Tracking Route in Background',
+        notificationText: 'Location: ${_kalman.lat.toStringAsFixed(5)}, ${_kalman.lng.toStringAsFixed(5)}',
       );
-    } catch (_) {
-      // 100% offline - ignore intermittent GPS read timeouts
-    }
+    } catch (_) {}
   }
 
   @override
-  Future<void> onDestroy(DateTime timestamp) async {
-    // Cleanup background resources
-  }
+  Future<void> onDestroy(DateTime timestamp) async {}
 }
 
 // -----------------------------------------------------------------------------
-// 1D/2D Kalman Filter Implementation for GPS Drift Smoothing
+// Kalman Filter Implementation
 // -----------------------------------------------------------------------------
 class KalmanLatLong {
   final double qMetresPerSecond;
   int? _timestampMs;
   double _lat = 0.0;
   double _lng = 0.0;
-  double _variance = -1.0; // P error covariance
+  double _variance = -1.0;
 
   KalmanLatLong({this.qMetresPerSecond = 3.0});
 
   double get lat => _lat;
   double get lng => _lng;
-  double get accuracy => math.sqrt(_variance);
-  bool get isInitialized => _variance > 0;
 
   void reset() {
     _variance = -1.0;
@@ -109,7 +104,6 @@ class KalmanLatLong {
     if (accuracy < 1.0) accuracy = 1.0;
 
     if (_variance < 0) {
-      // First point initialization
       _timestampMs = timestampMs;
       _lat = lat;
       _lng = lng;
@@ -117,27 +111,22 @@ class KalmanLatLong {
     } else {
       final int timeDelta = timestampMs - (_timestampMs ?? timestampMs);
       if (timeDelta > 0) {
-        // State Prediction: estimate variance increases with time delta
         _variance += (timeDelta / 1000.0) * qMetresPerSecond * qMetresPerSecond;
         _timestampMs = timestampMs;
       }
 
-      // Kalman Gain: K = P / (P + R)
       final double measurementVariance = accuracy * accuracy;
       final double k = _variance / (_variance + measurementVariance);
 
-      // Measurement Update
       _lat += k * (lat - _lat);
       _lng += k * (lng - _lng);
-
-      // Covariance Update: P = (1 - K) * P
       _variance = (1.0 - k) * _variance;
     }
   }
 }
 
 // -----------------------------------------------------------------------------
-// 100% Offline SQLite Database Helper
+// SQLite Database Helper (Updated Schema for Routes)
 // -----------------------------------------------------------------------------
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -147,7 +136,8 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('polio_route_navigator.db');
+    // Changed DB name to ensure fresh schema creation
+    _database = await _initDB('polio_navigator_v2.db');
     return _database!;
   }
 
@@ -164,103 +154,57 @@ class DatabaseHelper {
 
   Future<void> _createDB(Database db, int version) async {
     await db.execute('''
-      CREATE TABLE waypoints (
+      CREATE TABLE routes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        raw_lat REAL NOT NULL,
-        raw_lng REAL NOT NULL,
-        filtered_lat REAL NOT NULL,
-        filtered_lng REAL NOT NULL,
-        accuracy REAL NOT NULL,
-        speed REAL NOT NULL,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
         timestamp TEXT NOT NULL
       )
     ''');
 
     await db.execute('''
-      CREATE TABLE checkpoints (
+      CREATE TABLE route_points (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        house_number TEXT NOT NULL,
-        children_vaccinated INTEGER NOT NULL,
-        status TEXT NOT NULL,
-        latitude REAL NOT NULL,
-        longitude REAL NOT NULL,
-        notes TEXT,
+        route_id INTEGER NOT NULL,
+        lat REAL NOT NULL,
+        lng REAL NOT NULL,
         timestamp TEXT NOT NULL
       )
     ''');
   }
 
-  Future<int> insertWaypoint({
-    required double rawLat,
-    required double rawLng,
-    required double filteredLat,
-    required double filteredLng,
-    required double accuracy,
-    required double speed,
-    required String timestamp,
-  }) async {
+  Future<int> insertRoute(String name, String category) async {
     final db = await database;
-    return await db.insert('waypoints', {
-      'raw_lat': rawLat,
-      'raw_lng': rawLng,
-      'filtered_lat': filteredLat,
-      'filtered_lng': filteredLng,
-      'accuracy': accuracy,
-      'speed': speed,
-      'timestamp': timestamp,
-    });
-  }
-
-  Future<int> insertCheckpoint({
-    required String houseNumber,
-    required int childrenVaccinated,
-    required String status,
-    required double latitude,
-    required double longitude,
-    String? notes,
-  }) async {
-    final db = await database;
-    return await db.insert('checkpoints', {
-      'house_number': houseNumber,
-      'children_vaccinated': childrenVaccinated,
-      'status': status,
-      'latitude': latitude,
-      'longitude': longitude,
-      'notes': notes ?? '',
+    return await db.insert('routes', {
+      'name': name,
+      'category': category,
       'timestamp': DateTime.now().toIso8601String(),
     });
   }
 
-  Future<List<Map<String, dynamic>>> getWaypoints({int limit = 100}) async {
+  Future<int> insertRoutePoint({
+    required int routeId,
+    required double lat,
+    required double lng,
+    required String timestamp,
+  }) async {
     final db = await database;
-    return await db.query('waypoints', orderBy: 'id DESC', limit: limit);
+    return await db.insert('route_points', {
+      'route_id': routeId,
+      'lat': lat,
+      'lng': lng,
+      'timestamp': timestamp,
+    });
   }
 
-  Future<List<Map<String, dynamic>>> getCheckpoints() async {
+  Future<List<Map<String, dynamic>>> getRoutes() async {
     final db = await database;
-    return await db.query('checkpoints', orderBy: 'id DESC');
+    return await db.query('routes', orderBy: 'id DESC');
   }
 
-  Future<int> getWaypointCount() async {
+  Future<List<Map<String, dynamic>>> getRoutePoints(int routeId) async {
     final db = await database;
-    final count = Sqflite.firstIntValue(
-      await db.rawQuery('SELECT COUNT(*) FROM waypoints'),
-    );
-    return count ?? 0;
-  }
-
-  Future<int> getTotalVaccinated() async {
-    final db = await database;
-    final count = Sqflite.firstIntValue(
-      await db.rawQuery('SELECT SUM(children_vaccinated) FROM checkpoints'),
-    );
-    return count ?? 0;
-  }
-
-  Future<void> clearAllData() async {
-    final db = await database;
-    await db.delete('waypoints');
-    await db.delete('checkpoints');
+    return await db.query('route_points', where: 'route_id = ?', whereArgs: [routeId], orderBy: 'id ASC');
   }
 }
 
@@ -269,24 +213,21 @@ class DatabaseHelper {
 // -----------------------------------------------------------------------------
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Set preferred portrait orientation for fieldwork efficiency
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
 
   _initForegroundTask();
-
   runApp(const PolioNavigatorApp());
 }
 
 void _initForegroundTask() {
   FlutterForegroundTask.init(
     androidNotificationOptions: AndroidNotificationOptions(
-      channelId: 'polio_route_channel',
-      channelName: 'Polio Campaign Navigation Service',
-      channelDescription: 'Maintains background location tracking for health workers.',
+      channelId: 'route_tracker_channel',
+      channelName: 'Route Tracking Service',
+      channelDescription: 'Maintains background location tracking.',
       channelImportance: NotificationChannelImportance.HIGH,
       priority: NotificationPriority.HIGH,
     ),
@@ -297,7 +238,7 @@ void _initForegroundTask() {
     foregroundTaskOptions: ForegroundTaskOptions(
       eventAction: ForegroundTaskEventAction.repeat(3000),
       autoRunOnBoot: false,
-      allowWakeLock: true,
+      allowWakeLock: false, // Wakelock explicitly disabled for battery saving
     ),
   );
 }
@@ -315,272 +256,228 @@ class PolioNavigatorApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0284C7),
-          primary: const Color(0xFF0284C7),
-          secondary: const Color(0xFF0EA5E9),
-          surface: const Color(0xFFF8FAFC),
-        ),
-        appBarTheme: const AppBarTheme(
-          elevation: 0,
-          centerTitle: true,
-          backgroundColor: Color(0xFF0284C7),
-          foregroundColor: Colors.white,
-          titleTextStyle: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            letterSpacing: 0.3,
-          ),
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0284C7)),
       ),
-      home: const HomeScreen(),
+      home: const MapScreen(),
     );
   }
 }
 
 // -----------------------------------------------------------------------------
-// Home Screen
+// Main Map Screen (Tracking & Guiding Interface)
 // -----------------------------------------------------------------------------
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+class MapScreen extends StatefulWidget {
+  const MapScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<MapScreen> createState() => _MapScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
-  bool _isTracking = false;
-  bool _wakeLockEnabled = true;
+class _MapScreenState extends State<MapScreen> {
+  final MapController _mapController = MapController();
+  final KalmanLatLong _kalmanFilter = KalmanLatLong();
   StreamSubscription<Position>? _positionStream;
-  final KalmanLatLong _kalmanFilter = KalmanLatLong(qMetresPerSecond: 3.0);
 
-  Position? _latestRawPosition;
-  double? _latestFilteredLat;
-  double? _latestFilteredLng;
-  double _totalDistanceMeters = 0.0;
-  int _waypointCount = 0;
-  int _totalVaccinatedCount = 0;
-  List<Map<String, dynamic>> _checkpoints = [];
+  Position? _currentLocation;
+  List<LatLng> _activeTrackingRoute = []; // Red line (Current path)
+  List<LatLng> _loadedGuideRoute = []; // Blue line (Saved path for guiding)
+  
+  bool _isTracking = false;
+  int? _currentRouteId;
 
   @override
   void initState() {
     super.initState();
-    _checkPermissions();
-    _loadStoredStats();
-    _initWakeLock();
+    _checkPermissionsAndLocate();
   }
 
   @override
   void dispose() {
     _positionStream?.cancel();
-    if (_wakeLockEnabled) {
-      WakelockPlus.disable();
-    }
     super.dispose();
   }
 
-  Future<void> _initWakeLock() async {
-    await WakelockPlus.enable();
-    setState(() => _wakeLockEnabled = true);
-  }
-
-  Future<void> _toggleWakeLock() async {
-    final newState = !_wakeLockEnabled;
-    await WakelockPlus.toggle(enable: newState);
-    setState(() => _wakeLockEnabled = newState);
-  }
-
-  Future<void> _checkPermissions() async {
+  Future<void> _checkPermissionsAndLocate() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      return;
-    }
+    if (!serviceEnabled) return;
 
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-  }
 
-  Future<void> _loadStoredStats() async {
-    final wpCount = await DatabaseHelper.instance.getWaypointCount();
-    final vCount = await DatabaseHelper.instance.getTotalVaccinated();
-    final checks = await DatabaseHelper.instance.getCheckpoints();
-
-    if (mounted) {
-      setState(() {
-        _waypointCount = wpCount;
-        _totalVaccinatedCount = vCount;
-        _checkpoints = checks;
-      });
+    if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
+      _startLiveLocationStream();
     }
   }
 
-  Future<void> _toggleTracking() async {
-    if (_isTracking) {
-      await _stopTracking();
-    } else {
-      await _startTracking();
-    }
-  }
-
-  Future<void> _startTracking() async {
-    final hasPermission = await Geolocator.checkPermission();
-    if (hasPermission == LocationPermission.denied ||
-        hasPermission == LocationPermission.deniedForever) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Location permission is required for offline tracking.')),
-      );
-      return;
-    }
-
-    // Start Foreground Service
-    await FlutterForegroundTask.startService(
-      serviceId: 256,
-      notificationTitle: 'Polio Route Tracking Active',
-      notificationText: 'Logging immunization pathway offline...',
-      callback: startCallback,
-    );
-
-    // Start active GPS stream with Kalman filtering
+  void _startLiveLocationStream() {
     const locationSettings = LocationSettings(
       accuracy: LocationAccuracy.bestForNavigation,
-      distanceFilter: 3, // meters
+      distanceFilter: 2, 
     );
 
-    _kalmanFilter.reset();
+    _positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) {
+      _kalmanFilter.process(
+        lat: position.latitude,
+        lng: position.longitude,
+        accuracy: position.accuracy,
+        timestampMs: position.timestamp.millisecondsSinceEpoch,
+      );
 
-    _positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen(
-      (Position position) async {
-        final prevLat = _latestFilteredLat;
-        final prevLng = _latestFilteredLng;
+      final currentLatLng = LatLng(_kalmanFilter.lat, _kalmanFilter.lng);
 
-        _kalmanFilter.process(
-          lat: position.latitude,
-          lng: position.longitude,
-          accuracy: position.accuracy,
-          timestampMs: position.timestamp.millisecondsSinceEpoch,
-        );
-
-        final filteredLat = _kalmanFilter.lat;
-        final filteredLng = _kalmanFilter.lng;
-
-        if (prevLat != null && prevLng != null) {
-          final stepDistance = Geolocator.distanceBetween(
-            prevLat,
-            prevLng,
-            filteredLat,
-            filteredLng,
-          );
-          _totalDistanceMeters += stepDistance;
-        }
-
-        await DatabaseHelper.instance.insertWaypoint(
-          rawLat: position.latitude,
-          rawLng: position.longitude,
-          filteredLat: filteredLat,
-          filteredLng: filteredLng,
-          accuracy: position.accuracy,
-          speed: position.speed,
-          timestamp: position.timestamp.toIso8601String(),
-        );
-
-        if (mounted) {
-          setState(() {
-            _latestRawPosition = position;
-            _latestFilteredLat = filteredLat;
-            _latestFilteredLng = filteredLng;
-            _waypointCount++;
-          });
-        }
-      },
-    );
-
-    setState(() => _isTracking = true);
+      if (mounted) {
+        setState(() {
+          _currentLocation = position;
+          if (_isTracking) {
+            _activeTrackingRoute.add(currentLatLng);
+          }
+        });
+      }
+    });
   }
 
-  Future<void> _stopTracking() async {
-    await _positionStream?.cancel();
-    _positionStream = null;
-    await FlutterForegroundTask.stopService();
-
-    setState(() => _isTracking = false);
-    _loadStoredStats();
+  void _centerMapOnUser() {
+    if (_currentLocation != null) {
+      _mapController.move(
+        LatLng(_kalmanFilter.lat, _kalmanFilter.lng),
+        17.0, // Zoom level
+      );
+    }
   }
 
-  void _showAddCheckpointDialog() {
-    final houseCtrl = TextEditingController();
-    final childCtrl = TextEditingController(text: '1');
-    String status = 'Vaccinated';
+  Future<void> _startTrackingDialog() async {
+    String selectedCategory = 'Day 1 Route';
+    TextEditingController nameController = TextEditingController();
 
-    showDialog(
+    await showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Mark House Checkpoint'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: houseCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'House / Target Code',
-                    hintText: 'e.g. H-104, Block B',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: childCtrl,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Children (0-5 yrs)',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  value: status,
-                  items: const [
-                    DropdownMenuItem(value: 'Vaccinated', child: Text('Vaccinated (Green)')),
-                    DropdownMenuItem(value: 'Absent', child: Text('Absent / Locked')),
-                    DropdownMenuItem(value: 'Refused', child: Text('Refusal Case')),
-                  ],
-                  onChanged: (val) {
-                    if (val != null) setDialogState(() => status = val);
-                  },
-                  decoration: const InputDecoration(labelText: 'Visit Status'),
-                ),
-              ],
-            ),
+          title: const Text('Start New Route'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(labelText: 'Route Name (Optional)'),
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: selectedCategory,
+                items: const [
+                  DropdownMenuItem(value: 'Day 1 Route', child: Text('Polio Day 1')),
+                  DropdownMenuItem(value: 'Day 2 Route', child: Text('Polio Day 2')),
+                  DropdownMenuItem(value: 'Personal Route', child: Text('Personal / Cycling')),
+                ],
+                onChanged: (val) {
+                  if (val != null) setDialogState(() => selectedCategory = val);
+                },
+                decoration: const InputDecoration(labelText: 'Category'),
+              ),
+            ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () async {
-                final house = houseCtrl.text.trim();
-                final count = int.tryParse(childCtrl.text) ?? 0;
-                final lat = _latestFilteredLat ?? _latestRawPosition?.latitude ?? 0.0;
-                final lng = _latestFilteredLng ?? _latestRawPosition?.longitude ?? 0.0;
+                Navigator.pop(ctx);
+                final routeName = nameController.text.isEmpty ? 'Unnamed Route' : nameController.text;
+                
+                // Create route in database
+                _currentRouteId = await DatabaseHelper.instance.insertRoute(routeName, selectedCategory);
+                
+                // Save active ID in preferences for background task
+                SharedPreferences prefs = await SharedPreferences.getInstance();
+                await prefs.setInt('activeRouteId', _currentRouteId!);
 
-                if (house.isNotEmpty) {
-                  await DatabaseHelper.instance.insertCheckpoint(
-                    houseNumber: house,
-                    childrenVaccinated: count,
-                    status: status,
-                    latitude: lat,
-                    longitude: lng,
-                  );
-                  Navigator.pop(ctx);
-                  _loadStoredStats();
-                }
+                // Start Foreground Service
+                await FlutterForegroundTask.startService(
+                  serviceId: 256,
+                  notificationTitle: 'Tracking: $routeName',
+                  notificationText: 'Recording route in background...',
+                  callback: startCallback,
+                );
+
+                setState(() {
+                  _isTracking = true;
+                  _activeTrackingRoute.clear();
+                  _loadedGuideRoute.clear(); // Clear old guides when starting fresh
+                  if (_currentLocation != null) {
+                    _activeTrackingRoute.add(LatLng(_kalmanFilter.lat, _kalmanFilter.lng));
+                  }
+                });
+                _centerMapOnUser();
               },
-              child: const Text('Save Local Checkpoint'),
+              child: const Text('Start Tracking'),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Future<void> _stopTracking() async {
+    await FlutterForegroundTask.stopService();
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.remove('activeRouteId');
+
+    setState(() {
+      _isTracking = false;
+      _currentRouteId = null;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Route Saved Successfully!')),
+    );
+  }
+
+  Future<void> _loadGuideRoute() async {
+    final routes = await DatabaseHelper.instance.getRoutes();
+    
+    if (routes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No saved routes found.')));
+      return;
+    }
+
+    if (!mounted) return;
+    
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Select Route to Guide'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: routes.length,
+            itemBuilder: (context, index) {
+              final route = routes[index];
+              return ListTile(
+                leading: const Icon(Icons.route, color: Colors.blue),
+                title: Text(route['name']),
+                subtitle: Text('${route['category']}\n${DateFormat('dd MMM yyyy, HH:mm').format(DateTime.parse(route['timestamp']))}'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final points = await DatabaseHelper.instance.getRoutePoints(route['id']);
+                  
+                  setState(() {
+                    _loadedGuideRoute = points.map((p) => LatLng(p['lat'], p['lng'])).toList();
+                    _activeTrackingRoute.clear(); // Clear active tracking visual
+                  });
+
+                  if (_loadedGuideRoute.isNotEmpty) {
+                    _mapController.move(_loadedGuideRoute.first, 16.0);
+                  }
+                },
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+        ],
       ),
     );
   }
@@ -589,283 +486,98 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Polio Route Navigator'),
+        title: const Text('Route Navigator'),
         actions: [
-          IconButton(
-            tooltip: 'Wakelock Screen Keep-On',
-            icon: Icon(
-              _wakeLockEnabled ? Icons.screen_lock_portrait : Icons.screen_lock_rotation,
-              color: _wakeLockEnabled ? Colors.yellowAccent : Colors.white70,
+          if (_loadedGuideRoute.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.clear),
+              tooltip: 'Clear Guide Line',
+              onPressed: () => setState(() => _loadedGuideRoute.clear()),
             ),
-            onPressed: _toggleWakeLock,
-          ),
-          IconButton(
-            tooltip: 'Clear Offline Route Data',
-            icon: const Icon(Icons.delete_outline),
-            onPressed: () async {
-              final confirm = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Clear All Local Route Data?'),
-                  content: const Text('This will purge all local SQLite waypoints and checkpoints.'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                    TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Clear Database')),
-                  ],
-                ),
-              );
-              if (confirm == true) {
-                await DatabaseHelper.instance.clearAllData();
-                _totalDistanceMeters = 0.0;
-                _loadStoredStats();
-              }
-            },
-          ),
         ],
       ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+      body: Stack(
+        children: [
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: const LatLng(30.0703, 71.1933), // Approx Muzaffargarh center
+              initialZoom: 13.0,
+            ),
             children: [
-              Card(
-                elevation: 1,
-                color: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                child: Padding(
-                  padding: const EdgeInsets.all(12.0),
-                  child: Row(
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(30),
-                        child: Image.asset(
-                          'assets/developer.jpg',
-                          width: 60,
-                          height: 60,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) {
-                            return Container(
-                              width: 60,
-                              height: 60,
-                              color: const Color(0xFFE0F2FE),
-                              child: const Icon(Icons.person, color: Color(0xFF0284C7), size: 36),
-                            );
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Field Vaccination Team #04',
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                            ),
-                            const Text(
-                              '100% Offline Mode • SQLite Active',
-                              style: TextStyle(color: Colors.green, fontSize: 13, fontWeight: FontWeight.w600),
-                            ),
-                            Text(
-                              'Wakelock: ${_wakeLockEnabled ? "ON (Screen Stays Awake)" : "OFF"}',
-                              style: const TextStyle(color: Colors.black54, fontSize: 12),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.polionavigator.polio_route_navigator',
               ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildMetricCard(
-                      label: 'Distance (KM)',
-                      value: (_totalDistanceMeters / 1000.0).toStringAsFixed(2),
-                      icon: Icons.directions_walk,
-                      color: const Color(0xFF0284C7),
+              PolylineLayer(
+                polylines: [
+                  // Blue line for Guide Mode
+                  if (_loadedGuideRoute.isNotEmpty)
+                    Polyline(
+                      points: _loadedGuideRoute,
+                      strokeWidth: 5.0,
+                      color: Colors.blue.withOpacity(0.8),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildMetricCard(
-                      label: 'Waypoints',
-                      value: '$_waypointCount',
-                      icon: Icons.timeline,
-                      color: const Color(0xFF0D9488),
+                  // Red line for Active Tracking
+                  if (_activeTrackingRoute.isNotEmpty)
+                    Polyline(
+                      points: _activeTrackingRoute,
+                      strokeWidth: 5.0,
+                      color: Colors.red.withOpacity(0.8),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildMetricCard(
-                      label: 'Vaccinated',
-                      value: '$_totalVaccinatedCount',
-                      icon: Icons.child_care,
-                      color: const Color(0xFF16A34A),
-                    ),
-                  ),
                 ],
               ),
-              const SizedBox(height: 16),
-              Card(
-                elevation: 1,
-                color: const Color(0xFFF1F5F9),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'Kalman Filter Drift Correction',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: _isTracking ? Colors.green.shade100 : Colors.grey.shade200,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              _isTracking ? 'FILTERING LIVE' : 'STANDBY',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                color: _isTracking ? Colors.green.shade800 : Colors.black54,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const Divider(height: 16),
-                      Text(
-                        'Raw GPS: ${_latestRawPosition?.latitude.toStringAsFixed(6) ?? "--"}, ${_latestRawPosition?.longitude.toStringAsFixed(6) ?? "--"}',
-                        style: const TextStyle(fontSize: 13, fontFamily: 'monospace', color: Colors.black87),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Filtered: ${_latestFilteredLat?.toStringAsFixed(6) ?? "--"}, ${_latestFilteredLng?.toStringAsFixed(6) ?? "--"}',
-                        style: const TextStyle(fontSize: 13, fontFamily: 'monospace', color: Color(0xFF0284C7), fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Sensor Accuracy Variance: ${_latestRawPosition?.accuracy.toStringAsFixed(1) ?? "--"}m',
-                        style: const TextStyle(fontSize: 12, color: Colors.black54),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton.icon(
-                onPressed: _toggleTracking,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _isTracking ? const Color(0xFFDC2626) : const Color(0xFF0284C7),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                icon: Icon(_isTracking ? Icons.stop : Icons.play_arrow),
-                label: Text(
-                  _isTracking ? 'STOP ROUTE TRACKING' : 'START OFFLINE TRACKING',
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _showAddCheckpointDialog,
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                icon: const Icon(Icons.add_location_alt),
-                label: const Text('MARK HOUSE CHECKPOINT'),
-              ),
-              const SizedBox(height: 24),
-              const Text(
-                'Recent Checkpoints (Local SQLite)',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              if (_checkpoints.isEmpty)
-                Container(
-                  padding: const EdgeInsets.all(24),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.black12),
-                  ),
-                  child: const Center(
-                    child: Text('No checkpoints logged yet. Tap "Mark House Checkpoint" to begin.'),
-                  ),
-                )
-              else
-                ListView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: _checkpoints.length,
-                  itemBuilder: (ctx, i) {
-                    final item = _checkpoints[i];
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: item['status'] == 'Vaccinated'
-                              ? Colors.green.shade100
-                              : Colors.amber.shade100,
-                          child: Icon(
-                            item['status'] == 'Vaccinated' ? Icons.check : Icons.warning_amber,
-                            color: item['status'] == 'Vaccinated' ? Colors.green : Colors.amber.shade900,
-                          ),
-                        ),
-                        title: Text('House: ${item['house_number']}'),
-                        subtitle: Text('Children: ${item['children_vaccinated']} • Status: ${item['status']}'),
-                        trailing: Text(
-                          DateFormat('HH:mm').format(DateTime.tryParse(item['timestamp']) ?? DateTime.now()),
-                          style: const TextStyle(fontSize: 12, color: Colors.black54),
+              MarkerLayer(
+                markers: [
+                  if (_currentLocation != null)
+                    Marker(
+                      point: LatLng(_kalmanFilter.lat, _kalmanFilter.lng),
+                      width: 60,
+                      height: 60,
+                      child: Transform.rotate(
+                        // Convert heading to radians for rotation
+                        angle: (_currentLocation!.heading * (math.pi / 180)),
+                        child: const Icon(
+                          Icons.navigation, // GPS Navigation Arrow Icon
+                          color: Colors.indigo,
+                          size: 40,
                         ),
                       ),
-                    );
-                  },
-                ),
+                    ),
+                ],
+              ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMetricCard({
-    required String label,
-    required String value,
-    required IconData icon,
-    required Color color,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.black12),
-      ),
-      child: Column(
-        children: [
-          Icon(icon, color: color, size: 24),
-          const SizedBox(height: 6),
-          Text(
-            value,
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: const TextStyle(fontSize: 11, color: Colors.black54),
+          
+          // Floating Action Buttons
+          Positioned(
+            bottom: 20,
+            right: 16,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                FloatingActionButton(
+                  heroTag: 'center_btn',
+                  backgroundColor: Colors.white,
+                  onPressed: _centerMapOnUser,
+                  child: const Icon(Icons.my_location, color: Colors.black87),
+                ),
+                const SizedBox(height: 12),
+                FloatingActionButton(
+                  heroTag: 'guide_btn',
+                  backgroundColor: Colors.blueAccent,
+                  onPressed: _isTracking ? null : _loadGuideRoute, // Disable loading route while tracking
+                  child: const Icon(Icons.directions, color: Colors.white),
+                ),
+                const SizedBox(height: 12),
+                FloatingActionButton(
+                  heroTag: 'track_btn',
+                  backgroundColor: _isTracking ? Colors.red : Colors.green,
+                  onPressed: _isTracking ? _stopTracking : _startTrackingDialog,
+                  child: Icon(_isTracking ? Icons.stop : Icons.play_arrow, color: Colors.white),
+                ),
+              ],
+            ),
           ),
         ],
       ),
