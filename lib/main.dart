@@ -8,6 +8,8 @@
 // 3. Dual Language Support (Urdu RTL & English)
 // 4. Export & Share Routes via WhatsApp (JSON format)
 // 5. Import Shared Routes
+// 6. Live Compass Directions (N, S, E, W)
+// 7. "Take Me Back" feature for return journeys
 // ==============================================================================
 
 import 'dart:async';
@@ -32,7 +34,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 // -----------------------------------------------------------------------------
 // Global Language State
 // -----------------------------------------------------------------------------
-final ValueNotifier<Locale> appLocale = ValueNotifier(const Locale('en'));
+final ValueNotifier<Locale> appLocale = ValueNotifier(const Locale('ur')); // Default Urdu RTL
 
 // -----------------------------------------------------------------------------
 // Translations Dictionary
@@ -57,6 +59,7 @@ const Map<String, Map<String, String>> translations = {
     'personal': 'Personal / Cycling',
     'clear_guide': 'Clear Guide Line',
     'import_btn': 'Import Shared Route',
+    'take_me_back_msg': 'Return route loaded on the map!',
   },
   'ur': {
     'title': 'روٹ نیویگیٹر',
@@ -77,6 +80,7 @@ const Map<String, Map<String, String>> translations = {
     'personal': 'ذاتی راستہ / سائیکلنگ',
     'clear_guide': 'رہنمائی کی لکیر مٹائیں',
     'import_btn': 'راستہ امپورٹ کریں',
+    'take_me_back_msg': 'واپسی کا راستہ نقشے پر لگا دیا گیا ہے!',
   }
 };
 
@@ -421,6 +425,20 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  // --- Direction / Compass Helper Method ---
+  String _getDirectionText(double? heading) {
+    if (heading == null || heading < 0) return appLocale.value.languageCode == 'ur' ? 'سمت تلاش کر رہا ہے...' : 'Finding Direction...';
+    if (heading >= 337.5 || heading < 22.5) return appLocale.value.languageCode == 'ur' ? 'شمال (North)' : 'North';
+    if (heading >= 22.5 && heading < 67.5) return appLocale.value.languageCode == 'ur' ? 'شمال مشرق (NE)' : 'North East';
+    if (heading >= 67.5 && heading < 112.5) return appLocale.value.languageCode == 'ur' ? 'مشرق (East)' : 'East';
+    if (heading >= 112.5 && heading < 157.5) return appLocale.value.languageCode == 'ur' ? 'جنوب مشرق (SE)' : 'South East';
+    if (heading >= 157.5 && heading < 202.5) return appLocale.value.languageCode == 'ur' ? 'جنوب (South)' : 'South';
+    if (heading >= 202.5 && heading < 247.5) return appLocale.value.languageCode == 'ur' ? 'جنوب مغرب (SW)' : 'South West';
+    if (heading >= 247.5 && heading < 292.5) return appLocale.value.languageCode == 'ur' ? 'مغرب (West)' : 'West';
+    if (heading >= 292.5 && heading < 337.5) return appLocale.value.languageCode == 'ur' ? 'شمال مغرب (NW)' : 'North West';
+    return '';
+  }
+
   Future<void> _startTrackingDialog() async {
     String selectedCategory = 'day1';
     TextEditingController nameController = TextEditingController();
@@ -501,6 +519,24 @@ class _MapScreenState extends State<MapScreen> {
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(tr(context, 'route_saved'))),
+    );
+  }
+
+  // --- Take Me Back Feature ---
+  Future<void> _takeMeBack() async {
+    if (_activeTrackingRoute.isEmpty) return;
+    
+    setState(() {
+      // Reverse the active route and set it as guide route
+      _loadedGuideRoute = _activeTrackingRoute.reversed.toList();
+      _activeTrackingRoute.clear();
+    });
+    
+    await _stopTracking(); // Stops tracking automatically
+    _centerMapOnUser();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(tr(context, 'take_me_back_msg'))),
     );
   }
 
@@ -714,6 +750,37 @@ class _MapScreenState extends State<MapScreen> {
             ],
           ),
           
+          // --- Live Compass Directions ---
+          Positioned(
+            top: 16,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.9),
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black26, blurRadius: 4),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.explore, color: Colors.indigo, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      _getDirectionText(_currentLocation?.heading),
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // Floating Action Buttons
           Positioned(
             bottom: 20,
             right: appLocale.value.languageCode == 'en' ? 16 : null,
@@ -728,6 +795,19 @@ class _MapScreenState extends State<MapScreen> {
                   child: const Icon(Icons.my_location, color: Colors.black87),
                 ),
                 const SizedBox(height: 12),
+                
+                // --- Take Me Back Button (Only visible during active tracking) ---
+                if (_isTracking)
+                  FloatingActionButton(
+                    heroTag: 'take_back_btn',
+                    backgroundColor: Colors.orange,
+                    tooltip: 'Take Me Back',
+                    onPressed: _takeMeBack,
+                    child: const Icon(Icons.u_turn_left, color: Colors.white),
+                  ),
+                
+                if (_isTracking) const SizedBox(height: 12),
+
                 FloatingActionButton(
                   heroTag: 'guide_btn',
                   backgroundColor: Colors.blueAccent,
@@ -735,6 +815,7 @@ class _MapScreenState extends State<MapScreen> {
                   child: const Icon(Icons.directions, color: Colors.white),
                 ),
                 const SizedBox(height: 12),
+                
                 FloatingActionButton(
                   heroTag: 'track_btn',
                   backgroundColor: _isTracking ? Colors.red : Colors.green,
