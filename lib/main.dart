@@ -1,15 +1,18 @@
 // lib/main.dart
 // ==============================================================================
 // 100% OFFLINE POLIO ROUTE NAVIGATOR (VISUAL MAP EDITION)
+// Developed by: Asif Raza
 // Features:
 // 1. Visual Map with flutter_map & latlong2
-// 2. Tracking Mode (Records red polyline, saves with category)
-// 3. Guide Mode (Loads blue polyline, navigation arrow rotates by heading)
-// 4. Background foreground task tracking (Wakelock removed for battery saving)
-// 5. 1D/2D Kalman Filter algorithm for mitigating GPS drift
+// 2. Tracking Mode & Guide Mode
+// 3. Dual Language Support (Urdu RTL & English)
+// 4. Export & Share Routes via WhatsApp (JSON format)
+// 5. Import Shared Routes
 // ==============================================================================
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -21,6 +24,66 @@ import 'package:sqflite/sqflite.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+
+// -----------------------------------------------------------------------------
+// Global Language State
+// -----------------------------------------------------------------------------
+final ValueNotifier<Locale> appLocale = ValueNotifier(const Locale('en'));
+
+// -----------------------------------------------------------------------------
+// Translations Dictionary
+// -----------------------------------------------------------------------------
+const Map<String, Map<String, String>> translations = {
+  'en': {
+    'title': 'Route Navigator',
+    'developed_by': 'Developed by Asif Raza © All Rights Reserved',
+    'start_new_route': 'Start New Route',
+    'route_name': 'Route Name (Optional)',
+    'category': 'Category',
+    'start_tracking': 'Start Tracking',
+    'stop_tracking': 'Stop Tracking',
+    'select_route': 'Select Route to Guide',
+    'import_success': 'Route imported successfully!',
+    'route_saved': 'Route Saved Successfully!',
+    'no_routes': 'No saved routes found.',
+    'cancel': 'Cancel',
+    'close': 'Close',
+    'day1': 'Polio Day 1',
+    'day2': 'Polio Day 2',
+    'personal': 'Personal / Cycling',
+    'clear_guide': 'Clear Guide Line',
+    'import_btn': 'Import Shared Route',
+  },
+  'ur': {
+    'title': 'روٹ نیویگیٹر',
+    'developed_by': 'آصف رضا کی تیار کردہ © جملہ حقوق محفوظ ہیں',
+    'start_new_route': 'نیا راستہ شروع کریں',
+    'route_name': 'راستے کا نام (اختیاری)',
+    'category': 'زمرہ',
+    'start_tracking': 'ٹریکنگ شروع کریں',
+    'stop_tracking': 'ٹریکنگ روکیں',
+    'select_route': 'رہنمائی کے لیے راستہ منتخب کریں',
+    'import_success': 'راستہ کامیابی سے امپورٹ ہو گیا!',
+    'route_saved': 'راستہ کامیابی سے محفوظ ہو گیا!',
+    'no_routes': 'کوئی محفوظ شدہ راستہ نہیں ملا۔',
+    'cancel': 'منسوخ کریں',
+    'close': 'بند کریں',
+    'day1': 'پولیو ڈے 1',
+    'day2': 'پولیو ڈے 2',
+    'personal': 'ذاتی راستہ / سائیکلنگ',
+    'clear_guide': 'رہنمائی کی لکیر مٹائیں',
+    'import_btn': 'راستہ امپورٹ کریں',
+  }
+};
+
+String tr(BuildContext context, String key) {
+  final lang = Localizations.localeOf(context).languageCode;
+  return translations[lang]?[key] ?? key;
+}
 
 // -----------------------------------------------------------------------------
 // Top-Level Background Task Handler Callback
@@ -51,7 +114,6 @@ class PolioLocationTaskHandler extends TaskHandler {
         timestampMs: timestamp.millisecondsSinceEpoch,
       );
 
-      // Check if a route is currently being actively tracked
       SharedPreferences prefs = await SharedPreferences.getInstance();
       int? activeRouteId = prefs.getInt('activeRouteId');
 
@@ -65,7 +127,7 @@ class PolioLocationTaskHandler extends TaskHandler {
       }
 
       FlutterForegroundTask.updateService(
-        notificationTitle: 'Tracking Route in Background',
+        notificationTitle: 'Tracking Route',
         notificationText: 'Location: ${_kalman.lat.toStringAsFixed(5)}, ${_kalman.lng.toStringAsFixed(5)}',
       );
     } catch (_) {}
@@ -126,7 +188,7 @@ class KalmanLatLong {
 }
 
 // -----------------------------------------------------------------------------
-// SQLite Database Helper (Updated Schema for Routes)
+// SQLite Database Helper
 // -----------------------------------------------------------------------------
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -136,15 +198,13 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    // Changed DB name to ensure fresh schema creation
-    _database = await _initDB('polio_navigator_v2.db');
+    _database = await _initDB('polio_navigator_v3.db');
     return _database!;
   }
 
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = p.join(dbPath, filePath);
-
     return await openDatabase(
       path,
       version: 1,
@@ -161,7 +221,6 @@ class DatabaseHelper {
         timestamp TEXT NOT NULL
       )
     ''');
-
     await db.execute('''
       CREATE TABLE route_points (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,7 +297,7 @@ void _initForegroundTask() {
     foregroundTaskOptions: ForegroundTaskOptions(
       eventAction: ForegroundTaskEventAction.repeat(3000),
       autoRunOnBoot: false,
-      allowWakeLock: false, // Wakelock explicitly disabled for battery saving
+      allowWakeLock: false,
     ),
   );
 }
@@ -251,14 +310,29 @@ class PolioNavigatorApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Polio Route Navigator',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0284C7)),
-      ),
-      home: const MapScreen(),
+    return ValueListenableBuilder<Locale>(
+      valueListenable: appLocale,
+      builder: (context, locale, child) {
+        return MaterialApp(
+          title: 'Route Navigator',
+          debugShowCheckedModeBanner: false,
+          locale: locale,
+          supportedLocales: const [
+            Locale('en', ''),
+            Locale('ur', ''),
+          ],
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          theme: ThemeData(
+            useMaterial3: true,
+            colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0284C7)),
+          ),
+          home: const MapScreen(),
+        );
+      }
     );
   }
 }
@@ -279,8 +353,8 @@ class _MapScreenState extends State<MapScreen> {
   StreamSubscription<Position>? _positionStream;
 
   Position? _currentLocation;
-  List<LatLng> _activeTrackingRoute = []; // Red line (Current path)
-  List<LatLng> _loadedGuideRoute = []; // Blue line (Saved path for guiding)
+  List<LatLng> _activeTrackingRoute = []; 
+  List<LatLng> _loadedGuideRoute = []; 
   
   bool _isTracking = false;
   int? _currentRouteId;
@@ -342,75 +416,72 @@ class _MapScreenState extends State<MapScreen> {
     if (_currentLocation != null) {
       _mapController.move(
         LatLng(_kalmanFilter.lat, _kalmanFilter.lng),
-        17.0, // Zoom level
+        17.0,
       );
     }
   }
 
   Future<void> _startTrackingDialog() async {
-    String selectedCategory = 'Day 1 Route';
+    String selectedCategory = 'day1';
     TextEditingController nameController = TextEditingController();
 
     await showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Start New Route'),
+          title: Text(tr(context, 'start_new_route')),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(
                 controller: nameController,
-                decoration: const InputDecoration(labelText: 'Route Name (Optional)'),
+                decoration: InputDecoration(labelText: tr(context, 'route_name')),
               ),
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
                 value: selectedCategory,
-                items: const [
-                  DropdownMenuItem(value: 'Day 1 Route', child: Text('Polio Day 1')),
-                  DropdownMenuItem(value: 'Day 2 Route', child: Text('Polio Day 2')),
-                  DropdownMenuItem(value: 'Personal Route', child: Text('Personal / Cycling')),
+                items: [
+                  DropdownMenuItem(value: 'day1', child: Text(tr(context, 'day1'))),
+                  DropdownMenuItem(value: 'day2', child: Text(tr(context, 'day2'))),
+                  DropdownMenuItem(value: 'personal', child: Text(tr(context, 'personal'))),
                 ],
                 onChanged: (val) {
                   if (val != null) setDialogState(() => selectedCategory = val);
                 },
-                decoration: const InputDecoration(labelText: 'Category'),
+                decoration: InputDecoration(labelText: tr(context, 'category')),
               ),
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(tr(context, 'cancel'))),
             ElevatedButton(
               onPressed: () async {
                 Navigator.pop(ctx);
                 final routeName = nameController.text.isEmpty ? 'Unnamed Route' : nameController.text;
                 
-                // Create route in database
                 _currentRouteId = await DatabaseHelper.instance.insertRoute(routeName, selectedCategory);
                 
-                // Save active ID in preferences for background task
                 SharedPreferences prefs = await SharedPreferences.getInstance();
                 await prefs.setInt('activeRouteId', _currentRouteId!);
 
-                // Start Foreground Service
                 await FlutterForegroundTask.startService(
                   serviceId: 256,
                   notificationTitle: 'Tracking: $routeName',
-                  notificationText: 'Recording route in background...',
+                  notificationText: 'Recording route...',
                   callback: startCallback,
                 );
 
                 setState(() {
                   _isTracking = true;
                   _activeTrackingRoute.clear();
-                  _loadedGuideRoute.clear(); // Clear old guides when starting fresh
+                  _loadedGuideRoute.clear(); 
                   if (_currentLocation != null) {
                     _activeTrackingRoute.add(LatLng(_kalmanFilter.lat, _kalmanFilter.lng));
                   }
                 });
                 _centerMapOnUser();
               },
-              child: const Text('Start Tracking'),
+              child: Text(tr(context, 'start_tracking')),
             ),
           ],
         ),
@@ -429,15 +500,70 @@ class _MapScreenState extends State<MapScreen> {
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Route Saved Successfully!')),
+      SnackBar(content: Text(tr(context, 'route_saved'))),
     );
+  }
+
+  Future<void> _shareRoute(Map<String, dynamic> route) async {
+    try {
+      final points = await DatabaseHelper.instance.getRoutePoints(route['id']);
+      final routeData = {
+        'name': route['name'],
+        'category': route['category'],
+        'points': points,
+      };
+      
+      final jsonStr = jsonEncode(routeData);
+      final directory = await getTemporaryDirectory();
+      String safeName = route['name'].toString().replaceAll(' ', '_');
+      final file = File('${directory.path}/$safeName.json');
+      await file.writeAsString(jsonStr);
+      
+      await Share.shareXFiles([XFile(file.path)], text: 'Shared Route: ${route['name']}');
+    } catch (e) {
+      debugPrint("Error sharing: $e");
+    }
+  }
+
+  Future<void> _importRoute() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+      );
+      
+      if (result != null && result.files.single.path != null) {
+        final file = File(result.files.single.path!);
+        final jsonStr = await file.readAsString();
+        final data = jsonDecode(jsonStr);
+        
+        int newRouteId = await DatabaseHelper.instance.insertRoute(
+          data['name'] + ' (Imported)', 
+          data['category']
+        );
+        
+        for (var pt in data['points']) {
+          await DatabaseHelper.instance.insertRoutePoint(
+            routeId: newRouteId, 
+            lat: pt['lat'], 
+            lng: pt['lng'], 
+            timestamp: pt['timestamp']
+          );
+        }
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(tr(context, 'import_success'))),
+        );
+      }
+    } catch (e) {
+      debugPrint("Error importing: $e");
+    }
   }
 
   Future<void> _loadGuideRoute() async {
     final routes = await DatabaseHelper.instance.getRoutes();
     
     if (routes.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No saved routes found.')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tr(context, 'no_routes'))));
       return;
     }
 
@@ -446,7 +572,7 @@ class _MapScreenState extends State<MapScreen> {
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Select Route to Guide'),
+        title: Text(tr(context, 'select_route')),
         content: SizedBox(
           width: double.maxFinite,
           child: ListView.builder(
@@ -457,14 +583,18 @@ class _MapScreenState extends State<MapScreen> {
               return ListTile(
                 leading: const Icon(Icons.route, color: Colors.blue),
                 title: Text(route['name']),
-                subtitle: Text('${route['category']}\n${DateFormat('dd MMM yyyy, HH:mm').format(DateTime.parse(route['timestamp']))}'),
+                subtitle: Text('${tr(context, route['category'])}\n${DateFormat('dd MMM, HH:mm').format(DateTime.parse(route['timestamp']))}'),
+                trailing: IconButton(
+                  icon: const Icon(Icons.share, color: Colors.green),
+                  onPressed: () => _shareRoute(route),
+                ),
                 onTap: () async {
                   Navigator.pop(ctx);
                   final points = await DatabaseHelper.instance.getRoutePoints(route['id']);
                   
                   setState(() {
                     _loadedGuideRoute = points.map((p) => LatLng(p['lat'], p['lng'])).toList();
-                    _activeTrackingRoute.clear(); // Clear active tracking visual
+                    _activeTrackingRoute.clear(); 
                   });
 
                   if (_loadedGuideRoute.isNotEmpty) {
@@ -476,7 +606,7 @@ class _MapScreenState extends State<MapScreen> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(tr(context, 'close'))),
         ],
       ),
     );
@@ -486,14 +616,52 @@ class _MapScreenState extends State<MapScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Route Navigator'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(tr(context, 'title'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            Text(
+              tr(context, 'developed_by'),
+              style: const TextStyle(fontSize: 10, color: Colors.black54, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.download),
+            tooltip: tr(context, 'import_btn'),
+            onPressed: _importRoute,
+          ),
+          IconButton(
+            icon: const Icon(Icons.language),
+            tooltip: 'Language / زبان',
+            onPressed: () {
+              appLocale.value = appLocale.value.languageCode == 'en' 
+                ? const Locale('ur') 
+                : const Locale('en');
+            },
+          ),
           if (_loadedGuideRoute.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.clear),
-              tooltip: 'Clear Guide Line',
+              tooltip: tr(context, 'clear_guide'),
               onPressed: () => setState(() => _loadedGuideRoute.clear()),
             ),
+          Padding(
+            padding: const EdgeInsets.only(right: 12.0, left: 8.0),
+            child: ClipOval(
+              child: Image.asset(
+                'assets/developer.jpg',
+                width: 36,
+                height: 36,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) => const CircleAvatar(
+                  backgroundColor: Colors.grey,
+                  child: Icon(Icons.person, color: Colors.white),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
       body: Stack(
@@ -501,7 +669,7 @@ class _MapScreenState extends State<MapScreen> {
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
-              initialCenter: const LatLng(30.0703, 71.1933), // Approx Muzaffargarh center
+              initialCenter: const LatLng(30.0703, 71.1933), 
               initialZoom: 13.0,
             ),
             children: [
@@ -511,14 +679,12 @@ class _MapScreenState extends State<MapScreen> {
               ),
               PolylineLayer(
                 polylines: [
-                  // Blue line for Guide Mode
                   if (_loadedGuideRoute.isNotEmpty)
                     Polyline(
                       points: _loadedGuideRoute,
                       strokeWidth: 5.0,
                       color: Colors.blue.withOpacity(0.8),
                     ),
-                  // Red line for Active Tracking
                   if (_activeTrackingRoute.isNotEmpty)
                     Polyline(
                       points: _activeTrackingRoute,
@@ -535,10 +701,9 @@ class _MapScreenState extends State<MapScreen> {
                       width: 60,
                       height: 60,
                       child: Transform.rotate(
-                        // Convert heading to radians for rotation
                         angle: (_currentLocation!.heading * (math.pi / 180)),
                         child: const Icon(
-                          Icons.navigation, // GPS Navigation Arrow Icon
+                          Icons.navigation,
                           color: Colors.indigo,
                           size: 40,
                         ),
@@ -549,10 +714,10 @@ class _MapScreenState extends State<MapScreen> {
             ],
           ),
           
-          // Floating Action Buttons
           Positioned(
             bottom: 20,
-            right: 16,
+            right: appLocale.value.languageCode == 'en' ? 16 : null,
+            left: appLocale.value.languageCode == 'ur' ? 16 : null,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
@@ -566,7 +731,7 @@ class _MapScreenState extends State<MapScreen> {
                 FloatingActionButton(
                   heroTag: 'guide_btn',
                   backgroundColor: Colors.blueAccent,
-                  onPressed: _isTracking ? null : _loadGuideRoute, // Disable loading route while tracking
+                  onPressed: _isTracking ? null : _loadGuideRoute, 
                   child: const Icon(Icons.directions, color: Colors.white),
                 ),
                 const SizedBox(height: 12),
